@@ -1,0 +1,92 @@
+# Google Colab-friendly Microsoft Dynamics Contacts updater script
+
+import pandas as pd
+import requests
+import msal
+from google.colab import files
+
+# Upload your cleaned Excel file
+print("Upload your cleaned file")
+uploaded = files.upload()
+FILE_NAME = list(uploaded.keys())[0]
+
+API = f"{DV_URL}/api/data/v9.2"
+CLIENT_SECRET = os.environ["DV_CLIENT_SECRET"]
+
+def get_token():
+    app = msal.ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{TENANT_ID}",
+        client_credential=CLIENT_SECRET,
+    )
+    result = app.acquire_token_for_client(scopes=[f"{DV_URL}/.default"])
+    if "access_token" not in result:
+        raise RuntimeError(result)
+    return result["access_token"]
+
+def headers(token):
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "OData-Version": "4.0",
+        "OData-MaxVersion": "4.0",
+    }
+
+def clean(v):
+    if pd.isna(v):
+        return ""
+    return str(v).strip()
+
+print("Getting token...")
+token = get_token()
+print("Connected to Dynamics ✅")
+
+df = pd.read_excel(FILE_NAME, dtype=str).fillna("")
+
+updated, created, failed = 0, 0, 0
+
+for i, row in df.iterrows():
+    contact_id = clean(row.get("ContactID"))
+    account_id = clean(row.get("parentcustomerid"))
+
+    # Skip rows with no name
+    if clean(row.get("firstname")) == "" and clean(row.get("lastname")) == "":
+        print(f"Row {i+2}: skipped - blank first/last name")
+        continue
+
+    payload = {
+        "firstname": clean(row.get("firstname")),
+        "lastname": clean(row.get("lastname")),
+        "jobtitle": clean(row.get("jobtitle")),
+        "emailaddress1": clean(row.get("emailaddress1")),
+        "emailaddress2": clean(row.get("emailaddress2")),
+        "parentcustomerid_account@odata.bind": f"/accounts({account_id})",
+    }
+
+    payload = {k: v for k, v in payload.items() if v != ""}
+
+    try:
+        if contact_id:
+            url = f"{API}/contacts({contact_id})"
+            r = requests.patch(url, headers=headers(token), json=payload)
+            if r.status_code not in (200, 204):
+                raise Exception(r.text)
+            updated += 1
+        else:
+            url = f"{API}/contacts"
+            r = requests.post(url, headers=headers(token), json=payload)
+            if r.status_code not in (200, 201, 204):
+                raise Exception(r.text)
+            created += 1
+
+        if (i+1) % 25 == 0:
+            print(f"Processed {i+1} rows...")
+
+    except Exception as e:
+        failed += 1
+        print(f"Row {i+2} FAILED: {e}")
+
+print("\n🎯 DONE")
+print(f"Updated: {updated}")
+print(f"Created: {created}")
+print(f"Failed: {failed}")
